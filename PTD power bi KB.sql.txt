@@ -1,0 +1,821 @@
+-- create Temp table r for Disbursement and Repayment data by using CAS/Revenue Account Reconsilition report
+with r as
+	(SELECT	
+		CASE 
+			WHEN RAHeader.fstrLineDescription = 'PI' THEN RAHeader.fcurPaymentAmount
+			ELSE
+				CASE
+					WHEN	RAHeader.fstrLineCode  ='DB' THEN 
+						CASE 
+							WHEN	JVP.fstrSourceRAKey       =JVP.fstrDestRAKey THEN JVP.fcurSourceAmount 
+							WHEN	RAHeader.fstrSourceRaKey  =JVP.fstrSourceRaKey THEN JVP.fcurSourceAmount 
+							ELSE	JVP.fcurDestAmount 
+						END 
+					ELSE
+						CASE 
+							WHEN	JVP.fstrSourceRAKey     =JVP.fstrDestRAKey THEN JVP.fcurDestAmount 
+							WHEN	RAHeader.fstrDestRaKey  =JVP.fstrSourceRaKey THEN JVP.fcurSourceAmount 
+							ELSE	JVP.fcurDestAmount 
+					END 
+			END
+		END AS fcurAmount,
+		                
+		/* CAS Client IS first part of the ACK code */
+		CASE 
+			WHEN	LEN(RAHeader.fstrAck)>=21 THEN SUBSTRING(RAHeader.fstrAck,
+				0,
+				CHARINDEX('.',RAHeader.fstrAck,1)) 
+			ELSE	'' 
+		END AS fstrCASClient,
+		/* CAS Responsibility Centre IS second part of the ACK code */
+		CASE 
+			WHEN	LEN(RAHeader.fstrAck)>=21 THEN SUBSTRING(RAHeader.fstrAck,
+				CHARINDEX('.',RAHeader.fstrAck,1)+1,
+				CHARINDEX('.',
+					RAHeader.fstrAck,
+					CHARINDEX('.',RAHeader.fstrAck,1)+1) - CHARINDEX('.',RAHeader.fstrAck,1)-1) 
+			ELSE	'' 
+		END AS fstrCASRespCentre,
+		/* CAS Service Line IS third part of the ACK code */
+		CASE 
+			WHEN	LEN(RAHeader.fstrAck)>=21 THEN SUBSTRING(RAHeader.fstrAck,
+				CHARINDEX('.',
+					RAHeader.fstrAck,
+					CHARINDEX('.',RAHeader.fstrAck,1)+1) +1,
+				CHARINDEX('.',
+					RAHeader.fstrAck,
+					CHARINDEX('.',
+						RAHeader.fstrAck,
+						CHARINDEX('.',RAHeader.fstrAck,1)+1) +1) - CHARINDEX('.',
+					RAHeader.fstrAck,
+					CHARINDEX('.',RAHeader.fstrAck,1)+1) -1) 
+			ELSE	'' 
+		END AS fstrCASServiceLine,
+		/* CAS STOB IS fourth part of the ACK code */
+		CASE 
+			WHEN	LEN(RAHeader.fstrAck)>=21 THEN SUBSTRING(RAHeader.fstrAck,
+				CHARINDEX('.',
+					RAHeader.fstrAck,
+					CHARINDEX('.',
+						RAHeader.fstrAck,
+						CHARINDEX('.',RAHeader.fstrAck,1)+1) +1) +1,
+				CHARINDEX('.',
+					RAHeader.fstrAck,
+					CHARINDEX('.',
+						RAHeader.fstrAck,
+						CHARINDEX('.',
+							RAHeader.fstrAck,
+							CHARINDEX('.',RAHeader.fstrAck,1)+1) +1) +1) - CHARINDEX('.',
+					RAHeader.fstrAck,
+					CHARINDEX('.',
+						RAHeader.fstrAck,
+						CHARINDEX('.',RAHeader.fstrAck,1)+1) +1) -1) 
+			ELSE	'' 
+		END AS fstrSTOB,
+		/* CAS Project IS fifth part of the ACK code */
+		CASE 
+			WHEN	LEN(RAHeader.fstrAck)>=21 THEN SUBSTRING(RAHeader.fstrAck,
+				CHARINDEX('.',
+					RAHeader.fstrAck,
+					CHARINDEX('.',
+						RAHeader.fstrAck,
+						CHARINDEX('.',
+							RAHeader.fstrAck,
+							CHARINDEX('.',RAHeader.fstrAck,1)+1) +1) +1) +1,
+				CHARINDEX('.',
+					RAHeader.fstrAck,
+					CHARINDEX('.',
+						RAHeader.fstrAck,
+						CHARINDEX('.',
+							RAHeader.fstrAck,
+							CHARINDEX('.',
+								RAHeader.fstrAck,
+								CHARINDEX('.',RAHeader.fstrAck,1)+1) +1) +1) +1) - CHARINDEX('.',
+					RAHeader.fstrAck,
+					CHARINDEX('.',
+						RAHeader.fstrAck,
+						CHARINDEX('.',
+							RAHeader.fstrAck,
+							CHARINDEX('.',RAHeader.fstrAck,1)+1) +1) +1) -1) 
+			ELSE	'' 
+		END AS fstrCASProject,
+		RAHeader.fdtmJVDate as fdtmJVDate
+		
+	FROM	(/* Transmitted to CAS */ 
+		SELECT	'No' AS fstrSentToCAS,
+			CAS.fstrJVName,
+			CAS.flngGenTaxJVKey,
+			CASE 
+				WHEN	CAS.fstrLineCode  ='D' THEN 'DB' 
+				ELSE	'CR' 
+			END 	AS fstrLineCode,
+			CAS.fdtmGLEffectiveDate,
+			CAS.fstrACK,
+			CAS.fstrLineDescription,
+			CAS.fstrStatus,
+			JV.fstrJVType,
+			JV.fdtmJVDate,
+			JV.fdtmFiscalYear,
+			jv.fstrSourceRakey,
+			jv.fstrDestRaKey,
+			CAST(JV.fdtmCreated AS DATE) AS fdtmCreated,
+			CAST(JV.fdtmReconciled AS DATE) AS fdtmReconciled,
+                        0 as flngRefundTransKey,
+                        0 as fcurPaymentAmount
+                        
+		FROM	tblBC_CASFileJVDetail CAS with (nolock),
+			tblRATxnJV JV with (nolock) 
+
+		WHERE	--fdtmGLEffectiveDate BETWEEN @pdtmFrom 
+		--AND	@pdtmTo AND
+			CAS.flngGenTaxJVKey  = JV.flngJVKey 
+
+		UNION	ALL /* NOT transmitted to CAS */ 
+
+		SELECT	'Yes' AS fstrSentToCAS,
+			'n/a' AS fstrJVName,
+			jv.flngJVKey,
+			CASE 
+				WHEN	jv.fstrJvType  ='MDSPST' THEN 'DB' 
+				ELSE	'CR' 
+			END 	AS fstrLineCode,
+			CAST(jv.fdtmCreated AS DATE) AS fdtmGLEffectiveDate,
+			racc.fstrACK,
+			ra.fstrName AS fstrLineDescription,
+			'n/a' AS fstrStatus,
+			JV.fstrJVType,
+			JV.fdtmJVDate,
+			JV.fdtmFiscalYear,
+			jv.fstrSourceRakey,
+			jv.fstrDestRaKey,
+			CAST(JV.fdtmCreated AS DATE) AS fdtmCreated,
+			CAST(JV.fdtmReconciled AS DATE) AS fdtmReconciled,
+                        0 as flngRefundTransKey,
+                        0 as fcurPaymentAmount
+                        
+		FROM	tblRATxnJV jv with (nolock),
+			tblRATxnAccount ra with (nolock),
+			tblBC_RaTxnAccountAttributes racc with (nolock) 
+
+		WHERE	jv.fstrSourceRAKey  =  ra.fstrRAKey 
+		AND	ra.flngDocKey       =  racc.flngDocKey 
+		AND	ra.flngVer          =  0 
+		AND	jv.fstrJVType       IN ('MDSPST','MDSRVR') 
+		AND	NOT EXISTS	(SELECT	flngGenTaxJVKey 
+
+			FROM	tblBC_CASFileJVDetail with (nolock) 
+
+			WHERE	flngGenTaxJVKey  = jv.flngJVKey ) 
+		AND	racc.fstrAck  NOT IN ('',' ','n/a') 
+	                
+                UNION ALL /*  PIs */
+
+		SELECT	'No' AS fstrSentToCAS,
+                        '' as fstrJVName,
+                        '' as flngGenTaxJVKey,
+                        CASE 
+                        WHEN	PID.fstrLineCode  ='D' THEN 'DB' 
+                        ELSE	'CR' 
+                        END 	AS fstrLineCode,
+                        rfn.fdtmFileCreated as fdtmGLEffectiveDate,
+                        PID.fstrACK,
+                        'PI' as fstrLineDescription,
+                        PID.fstrStatus,
+                        '' as fstrJVType,
+                        '' as fdtmJVDate,
+                        '' as fdtmFiscalYear,
+                        '' as fstrSourceRakey,
+                        PID.fstrRaKey as fstrDestRaKey,
+                        CAST(rfn.fdtmFileCreated AS DATE) AS fdtmCreated,
+                        '' AS fdtmReconciled,
+                        rfntxn.flngRefundTransKey,
+                        PIDetail.fcurPaymentAmount
+
+		FROM	tblBC_CasFilePIDistribution PID INNER JOIN tblBC_CASFilePIDetail PIDetail 
+			ON PID.flngCASHeaderKey = PIDetail.flngCASHeaderKey LEFT OUTER JOIN tblrfnRefund rfn
+			ON PIDetail.flngGenTaxRefundKey  = rfn.flngRefundKey CROSS APPLY (SELECT TOP 1 txn.flngRefundTransKey
+				FROM tblRfnRefundTransaction txn
+				WHERE txn.flngRefundKey = rfn.flngRefundKey
+				ORDER BY txn.flngSourceTransKey) rfntxn
+                
+		)RAHeader 
+                LEFT OUTER JOIN tblRATxnJVDetailPosted JVP with (nolock)
+		ON 	RAHeader.flngGenTaxJVKey  =  JVP.flngJVKey LEFT OUTER JOIN tblTransStage TS with (nolock) 
+		ON	JVP.flngAccountKey        =  TS.flngAccountKey 
+		AND	JVP.fdtmFilingPeriod      =  TS.fdtmFilingPeriod 
+		AND	JVP.flngTransKey          =  TS.flngTransKey LEFT OUTER JOIN tblTransStage TS2
+		ON	RAHeader.flngRefundTransKey = TS2.flngTransKey LEFT OUTER JOIN tblAccountInfo ai with (nolock) 
+		ON	JVP.flngAccountKey        =  ai.flngAccountKey LEFT OUTER JOIN tblAccountInfo ai2 with (nolock) 
+		ON	TS2.flngAccountKey        =  ai2.flngAccountKey
+	WHERE	RAHeader.fstrStatus       <> 'REJECT'
+	)  
+
+-- Disbursement
+
+SELECT	
+	case
+        	When Month(fdtmJVDate) >= 4 then Concat(Concat(Concat('F',Year(fdtmJVDate)), '/'), Year(fdtmJVDate)+1)
+                When Month(fdtmJVDate) < 4 then Concat(Concat(Concat('F',Year(fdtmJVDate)-1), '/'), Year(fdtmJVDate))
+        End as 'Fiscal',
+        DATENAME (MONTH, DATEADD(MONTH, MONTH(fdtmJVDate) - 1, '1900-01-01')) as Month,
+	'Disbursements' as Category,
+	sum(fcurAmount) as Value
+from r	
+WHERE	
+fstrCASClient       = '022'
+AND	fstrCASRespCentre   = '32197'
+AND	fstrCASServiceLine  = '34276' 
+AND	fstrSTOB            = '1751'
+AND	fstrCASProject      = '3200000' 
+and Cast(fdtmJVDate as date) >= '2020-04-01'
+--and 	Cast(fdtmJVDate as date) between '2020-04-01' and '2021-03-23'
+group by
+case
+        	When Month(fdtmJVDate) >= 4 then Concat(Concat(Concat('F',Year(fdtmJVDate)), '/'), Year(fdtmJVDate)+1)
+                When Month(fdtmJVDate) < 4 then Concat(Concat(Concat('F',Year(fdtmJVDate)-1), '/'), Year(fdtmJVDate))
+        End,
+        DATENAME (MONTH, DATEADD(MONTH, MONTH(fdtmJVDate) - 1, '1900-01-01'))
+
+union
+
+-- Repayments 
+
+SELECT	
+	case
+        	When Month(fdtmJVDate) >= 4 then Concat(Concat(Concat('F',Year(fdtmJVDate)), '/'), Year(fdtmJVDate)+1)
+                When Month(fdtmJVDate) < 4 then Concat(Concat(Concat('F',Year(fdtmJVDate)-1), '/'), Year(fdtmJVDate))
+        End as 'Fiscal',
+        DATENAME (MONTH, DATEADD(MONTH, MONTH(fdtmJVDate) - 1, '1900-01-01')) as Month,
+	'Repayments' as Category,
+	sum(fcurAmount)*(-1) as Value
+from r	
+WHERE	
+fstrCASClient       = '022'
+AND	fstrCASRespCentre   = '32197'
+AND	fstrCASServiceLine  = '34276' 
+AND	fstrSTOB            = '1752'
+AND	fstrCASProject      = '3200000' 
+and 	Cast(fdtmJVDate as date) >= '2020-04-01' 
+group by
+case
+        	When Month(fdtmJVDate) >= 4 then Concat(Concat(Concat('F',Year(fdtmJVDate)), '/'), Year(fdtmJVDate)+1)
+                When Month(fdtmJVDate) < 4 then Concat(Concat(Concat('F',Year(fdtmJVDate)-1), '/'), Year(fdtmJVDate))
+        End,
+        DATENAME (MONTH, DATEADD(MONTH, MONTH(fdtmJVDate) - 1, '1900-01-01'))
+        
+        
+-- Receivable Balance
+
+-- Runing total 
+                select Fiscal, Month, Value from 
+                (select 
+                        case
+                                When EffectiveMonth >= 4 then Concat(Concat(Concat('F',EffectiveYear), '/'), EffectiveYear+1)
+                                When EffectiveMonth < 4 then Concat(Concat(Concat('F',EffectiveYear-1), '/'), EffectiveYear)
+                        End as 'Fiscal'	
+                        --Concat(Concat(Concat('F',EffectiveYear), '/'), EffectiveYear+1) as 'Fiscal'
+                        ,DATENAME (MONTH, DATEADD(MONTH, EffectiveMonth - 1, '1900-01-01')) as Month
+                        --,'Receivable Balance' as Category
+                        --,'' as TransactionType
+                        ,Value
+                from (select 
+                        --Year(t.fdtmFilingPeriod) as TaxYear
+                        --,l.fstrJurisdiction as JUR
+                        Year(t.fdtmwhen) as EffectiveYear         
+                        ,Month(t.fdtmwhen) as EffectiveMonth   
+                        --,'Receivable Balance' as Category
+                        --,t.fcurAmount
+                        ,Row_Number() Over (Partition By Year(t.fdtmwhen), Month(t.fdtmwhen) Order By t.fcurAmount DESC) as RowNum
+                        --,Sum(t.fcurAmount) Over (Partition By Year(t.fdtmwhen), Month(t.fdtmwhen)) Value
+                        ,Sum(t.fcurAmount) Over (Order by Year(t.fdtmwhen), Month(t.fdtmwhen)) as Value
+                        --,Convert(Varchar(20), Sum(t.fcurAmount) Over (Partition By Year(t.fdtmwhen), Month(t.fdtmwhen) Order By t.fcurAmount DESC Rows Between Current Row And 1 Following), 1) As Cumsum
+                        --,Sum(t.fcurAmount) as Amount 
+                from tblTransaction t
+                inner join tblAccountInfo ai on t.flngAccountKey = ai.flngAccountKey 
+                where ai.fstrAccountType = 'PTD') temp
+                where RowNum = 1
+                and EffectiveYear >= 2020 
+                and EffectiveMonth = 
+                        Case 
+                        	when EffectiveYear =YEAR(getdate()) and EffectiveMonth =Month(getdate()) then MONTH(getdate()) 
+                        	Else 3
+                        End
+                 ) ff
+                 where Fiscal != 'F2019/2020'
+;
+/*
+-- Monthly Cashflow break down
+
+select
+	--Year(t.fdtmFilingPeriod) as TaxYear
+        --,l.fstrJurisdiction as JUR
+        case
+        	When Month(t.fdtmwhen) >= 4 then Concat(Concat(Concat('F',Year(t.fdtmwhen)), '/'), Year(t.fdtmwhen)+1)
+                When Month(t.fdtmwhen) < 4 then Concat(Concat(Concat('F',Year(t.fdtmwhen)-1), '/'), Year(t.fdtmwhen))
+        End as 'Fiscal'	
+        ,DATENAME (MONTH, DATEADD(MONTH, MONTH(t.fdtmwhen) - 1, '1900-01-01')) as Month
+	--Year(t.fdtmwhen) as EffectiveYear 
+        --,Month(t.fdtmwhen) as EffectiveMonth 
+        ,'Monthly Cashflow' as Category
+        --,t.fstrTransType as TransactionType
+        ,Case
+        	When t.fstrTransType in ('REVTN', 'REVTP','ZMDLNP', 'PTDLNP') then 'Loan Principal'
+                when t.fstrTransType in ('REVIN', 'REVIP', 'INTMNL', 'INTSTD', 'ZMDINT') then 'Interest'
+                when t.fstrTransType in ('PTDFEE', 'ZMDFEE','PYMPNL', 'PYMPNM', 'ZMDNSF') then 'Fee (INCL. NSF)'
+                --when t.fstrTransType in ('PYMPNL', 'PYMPNM', 'ZMDNSF') then 'NSF Fee'
+                --When t.fstrTransType in ('SBACRD', 'SBADBT', 'SBAINT', 'SBAOTH', 'SBATAX') then 'Small Balance Adjustment'
+                when t.fstrTransType in ('PYMACC', 'PYMBLF', 'PYMCRA', 'PYMDMD', 'PYMOCG', 'PYMPRP', 'PYMTRS','CAMREC', 'CIVREC', 'CNGREC', 'CRCREC', 'CRFREC', 'CSAREC', 'CTAREC', 'EHTREC', 'ENCREC', 'FBTREC', 'FCOREC', 'FDRREC', 'FIVREC', 'FNGREC', 'FNRREC', 'FRFREC', 'FSAREC', 'FSCREC', 'FTAREC', 'HOGREC', 'HTLREC', 'INSREC', 'INUREC', 'LNCREC', 'LNGREC', 'LNVREC', 'LOGREC', 'MTPREC', 'MTQREC', 'MTRREC', 'OGCREC', 'OGDREC', 'OGRREC', 'PATREC', 'PSTREC', 'PTDREC', 'PTTREC', 'RPTREC', 'SPTREC', 'SSTREC', 'TDPREC', 'TESREC', 'TRAREC', 'TWIREC', 'TWSREC')  then 'Payment'
+                when t.fstrTransType in ('RFNIND','RFNINT', 'RFNSTD', 'WRKRFI') then 'Refund'
+                when t.fstrTransType in ('REVPYM') then 'NSF'
+                when t.fstrtransType in ('SBACRD', 'SBADBT', 'SBAINT', 'SBAOTH', 'SBATAX') then 'Small Balance Adjustment'
+                Else 'Others'
+        End As TransactionType
+        ,Sum(t.fcurAmount) as Amount 
+from tblTransaction t
+inner join tblAccountInfo ai on t.flngAccountKey = ai.flngAccountKey
+where ai.fstrAccountType = 'PTD' and t.fdtmwhen >='2020-04-11'--and Year(t.fdtmFilingPeriod) >= 2020 and t.fstrTransType ! = 'PYMACC' 
+group by 
+	case
+        	When Month(t.fdtmwhen) >= 4 then Concat(Concat(Concat('F',Year(t.fdtmwhen)), '/'), Year(t.fdtmwhen)+1)
+                When Month(t.fdtmwhen) < 4 then Concat(Concat(Concat('F',Year(t.fdtmwhen)-1), '/'), Year(t.fdtmwhen))
+        End 
+        ,DATENAME (MONTH, DATEADD(MONTH, MONTH(t.fdtmwhen) - 1, '1900-01-01')) 
+	--Year(t.fdtmwhen) as EffectiveYear 
+        --,Month(t.fdtmwhen) as EffectiveMonth 
+        --,'Monthly Cashflow' as Category
+        --,t.fstrTransType as TransactionType
+        ,Case
+        	When t.fstrTransType in ('REVTN', 'REVTP','ZMDLNP', 'PTDLNP') then 'Loan Principal'
+                when t.fstrTransType in ('REVIN', 'REVIP', 'INTMNL', 'INTSTD', 'ZMDINT') then 'Interest'
+                when t.fstrTransType in ('PTDFEE', 'ZMDFEE','PYMPNL', 'PYMPNM', 'ZMDNSF') then 'Fee (INCL. NSF)'
+                --when t.fstrTransType in ('PYMPNL', 'PYMPNM', 'ZMDNSF') then 'NSF Fee'
+                --When t.fstrTransType in ('SBACRD', 'SBADBT', 'SBAINT', 'SBAOTH', 'SBATAX') then 'Small Balance Adjustment'
+                when t.fstrTransType in ('PYMACC', 'PYMBLF', 'PYMCRA', 'PYMDMD', 'PYMOCG', 'PYMPRP', 'PYMTRS','CAMREC', 'CIVREC', 'CNGREC', 'CRCREC', 'CRFREC', 'CSAREC', 'CTAREC', 'EHTREC', 'ENCREC', 'FBTREC', 'FCOREC', 'FDRREC', 'FIVREC', 'FNGREC', 'FNRREC', 'FRFREC', 'FSAREC', 'FSCREC', 'FTAREC', 'HOGREC', 'HTLREC', 'INSREC', 'INUREC', 'LNCREC', 'LNGREC', 'LNVREC', 'LOGREC', 'MTPREC', 'MTQREC', 'MTRREC', 'OGCREC', 'OGDREC', 'OGRREC', 'PATREC', 'PSTREC', 'PTDREC', 'PTTREC', 'RPTREC', 'SPTREC', 'SSTREC', 'TDPREC', 'TESREC', 'TRAREC', 'TWIREC', 'TWSREC')  then 'Payment'
+                when t.fstrTransType in ('RFNIND','RFNINT', 'RFNSTD', 'WRKRFI') then 'Refund'
+                when t.fstrTransType in ('REVPYM') then 'NSF'
+                when t.fstrtransType in ('SBACRD', 'SBADBT', 'SBAINT', 'SBAOTH', 'SBATAX') then 'Small Balance Adjustment'
+                Else 'Others'
+         End
+        --group by Year(t.fdtmFilingPeriod), l.fstrJurisdiction, Year(t.fdtmwhen), Month(t.fdtmwhen), t.fstrTransType
+;
+*/
+
+-- Application Status (PTD Applications Summary)
+
+WITH cteDgLatest AS (
+    SELECT *
+    FROM (
+        SELECT d.flngCaseKey
+            ,  dg.fi64DecisionGroupKey
+            , dg.fdtmCompleted
+            , ROW_NUMBER() OVER (PARTITION BY d.flngCaseKey
+                            ORDER BY dg.fdtmCompleted DESC
+                                    , dg.fi64DecisionGroupKey) AS flngRowNumber -- pick one if same completed date
+            FROM tblBC_IntLtsDecision AS d
+            INNER JOIN tblBC_IntLtsDecisionGroup AS dg
+                ON d.fi64DecisionGroupKey = dg.fi64DecisionGroupKey
+        WHERE dg.fdtmCompleted <> @pdtmHighDate
+    ) q
+    WHERE q.flngRowNumber = 1
+)
+select
+	--Year(app.fdtmApplicationReceived) as RecYear
+        --,Month(app.fdtmApplicationReceived) as RecMonth
+        app.fintTaxYear
+        --,app.fstrJurisdiction
+        --ai.flngAccountKey
+        --,ai.fstrAccountType
+        --ai.fstrID       
+	,Case
+        	When c.fstrCaseType = 'PTDAPP' then 'Application'
+                When c.fstrCaseType = 'PTDRNW' then 'Renewal'
+        	Else ''
+          End As ApplicationType
+        ,Case
+        	When app.fstrProgramType = 'FWC' then 'Families with Children'
+                When app.fstrProgramType = 'FIN' then 'Financial Hardship'
+                When app.fstrProgramType = 'REG' then 'Regular'
+                Else 'N/A'
+         End As ProgramType
+        ,Case
+        	When app.fstrApplicationSource = 'ETAX' Then 'eTax'
+                When app.fstrApplicationSource = 'PAPER' Then 'Paper'
+                When app.fstrApplicationSource = 'BATCH' Then 'Auto Renewal'
+                Else ''
+         End As ApplicationSource
+        --,c.fdtmStageDate
+        ,Case
+        	When c.fstrStatus = 'APPROV' then 'Approved'
+                When c.fstrStatus = 'APVCLS' then 'Approved'
+                When c.fstrStatus = 'CANCLD' then 'Cancelled'
+                When c.fstrStatus = 'INEGBL' then 'Ineligible'
+                When c.fstrStatus = 'INPRG' then 'In Progress'
+                When c.fstrStatus = 'ONHOLD' then 'On Hold'
+                Else ''
+         End As Status
+        ,Case
+        	When c.fstrStage = 'APPROV' then 'Approved'
+                When c.fstrStage = 'REGLTO' then 'Register LTSA Charge'
+                When c.fstrStage = 'REGPPR' then 'Register PPR Charge'
+                When c.fstrStage = 'REOPEN' then 'Reopened'
+                When c.fstrStage = 'CANCEL' then 'Cancelled'
+                When c.fstrStage = 'INEGBL' then 'Ineligible'
+                When c.fstrStage = 'ACCREG' then 'Register Account'
+                When c.fstrStage = 'AWEXTI' then 'Get External Info'
+                When c.fstrStage = 'AWIDER' then 'Decision Engine'
+                When c.fstrStage = 'PTDUSR' then 'User Review'
+                When c.fstrStage = 'ACCUPD' then 'Update Account'
+                When c.fstrStage = 'PTDKI' then 'Key In'
+                When c.fstrStage = 'PTDKIC' then 'Key In Complete'
+                else ''
+          End As Stages      
+        --,c.fdtmClosed
+     , de.fstrEligibility
+     --, de.fstrReasons
+     --, de.fstrCharges
+     --,app.fblnDecEngResponseAccepted
+     --,app.fblnDecEngResponseReqRev
+     --,app.fblnDecEngResponseRejected
+     --, de.fdtmDecisionEngineResponse
+     ,app.fblnAutoRenewal as Signupforautorenw
+     ,app.fblnManufacturedHome
+     ,count(c.flngCaseKey) as NumCase
+        --,app.fblnAutoRenewal
+from tblBC_CsePTDAgreement app
+inner join tblACaseAll c
+on app.flngDocKey = c.flngDocKey and c.fstrCaseType  IN ('PTDAPP','PTDRNW')
+LEFT OUTER JOIN (
+                        SELECT dg.flngCaseKey
+                             , dg.fdtmCompleted AS fdtmDecisionEngineResponse
+                             , STUFF((
+                                         SELECT DISTINCT ',' + d.fstrEligibility
+                                         FROM tblBC_IntLtsDecision d
+                                         WHERE d.fi64DecisionGroupKey = dg.fi64DecisionGroupKey
+                                         FOR XML PATH('')
+                                     ), 1, 1, '') AS fstrEligibility
+                             , STUFF((
+                                         SELECT DISTINCT ',' + ch.fstrChargeType
+                                         FROM tblBC_IntLtsDecision d
+                                             INNER JOIN tblBC_IntLtsDecisionCharge ch
+                                                 ON d.fi64DecisionKey = ch.fi64DecisionKey
+                                         WHERE d.fi64DecisionGroupKey = dg.fi64DecisionGroupKey
+                                         FOR XML PATH('')
+                                     ), 1, 1, '') AS fstrCharges
+                             , STUFF((
+                                         SELECT DISTINCT ',' + r.fstrReasonCode
+                                         FROM tblBC_IntLtsDecision d
+                                             INNER JOIN tblBC_IntLtsDecisionReason r
+                                                 ON d.fi64DecisionKey = r.fi64DecisionKey
+                                         WHERE d.fi64DecisionGroupKey = dg.fi64DecisionGroupKey
+                                         FOR XML PATH('')
+                                     ), 1, 1, '') AS fstrReasons
+                        FROM cteDgLatest dg
+                    ) AS de
+ON  de.flngCaseKey = c.flngCaseKey 
+LEFT OUTER JOIN tblAccountInfo ai 
+ON	c.flngCustomerKey  = ai.flngCustomerKey 
+AND	c.flngAccountKey   = ai.flngAccountKey 
+--where app.fintTaxYear >= 2020
+group by 
+        Year(app.fdtmApplicationReceived)
+        ,Month(app.fdtmApplicationReceived)
+        ,app.fintTaxYear
+        --,app.fstrJurisdiction  
+	,Case
+        	When c.fstrCaseType = 'PTDAPP' then 'Application'
+                When c.fstrCaseType = 'PTDRNW' then 'Renewal'
+        	Else ''
+          End
+        ,Case
+        	When app.fstrProgramType = 'FWC' then 'Families with Children'
+                When app.fstrProgramType = 'FIN' then 'Financial Hardship'
+                When app.fstrProgramType = 'REG' then 'Regular'
+                Else 'N/A'
+         End
+         ,Case
+        	When app.fstrApplicationSource = 'ETAX' Then 'eTax'
+                When app.fstrApplicationSource = 'PAPER' Then 'Paper'
+                When app.fstrApplicationSource = 'BATCH' Then 'Auto Renewal'
+                Else ''
+          End
+        --,c.fdtmStageDate
+        ,Case
+        	When c.fstrStatus = 'APPROV' then 'Approved'
+                When c.fstrStatus = 'APVCLS' then 'Approved'
+                When c.fstrStatus = 'CANCLD' then 'Cancelled'
+                When c.fstrStatus = 'INEGBL' then 'Ineligible'
+                When c.fstrStatus = 'INPRG' then 'In Progress'
+                When c.fstrStatus = 'ONHOLD' then 'On Hold'
+                Else ''
+         End 
+        ,Case
+        	When c.fstrStage = 'APPROV' then 'Approved'
+                When c.fstrStage = 'REGLTO' then 'Register LTSA Charge'
+                When c.fstrStage = 'REGPPR' then 'Register PPR Charge'
+                When c.fstrStage = 'REOPEN' then 'Reopened'
+                When c.fstrStage = 'CANCEL' then 'Cancelled'
+                When c.fstrStage = 'INEGBL' then 'Ineligible'
+                When c.fstrStage = 'ACCREG' then 'Register Account'
+                When c.fstrStage = 'AWEXTI' then 'Get External Info'
+                When c.fstrStage = 'AWIDER' then 'Decision Engine'
+                When c.fstrStage = 'PTDUSR' then 'User Review'
+                When c.fstrStage = 'ACCUPD' then 'Update Account'
+                When c.fstrStage = 'PTDKI' then 'Key In'
+                When c.fstrStage = 'PTDKIC' then 'Key In Complete'
+                else ''
+          End
+     	, de.fstrEligibility
+     	--, de.fstrReasons
+     	--, de.fstrCharges
+     	--, de.fdtmDecisionEngineResponse     
+	--,app.fblnDecEngResponseAccepted
+     	--,app.fblnDecEngResponseReqRev
+     	--,app.fblnDecEngResponseRejected
+        ,app.fblnAutoRenewal
+        ,app.fblnManufacturedHome
+;
+/*
+-- how many signed Auto Renewal
+select count(att.flngDocKey) as SignedAutoRenewal
+from tblBC_AccPTDAttributes att
+inner join tblAccountInfo ai 
+ON ai.flngDocKey = att.flngDocKey
+where att.fblnAutoRenewal = 1 and ai.fstrAccountType = 'PTD'
+;
+*/
+
+-- Application average processing time for current year >= 2020, extral line need to be added for Tax Year 2022 and future
+
+With protime as
+    (select 
+           --app.fdtmApplicationReceived
+           --,c.fdtmClosed
+           app.fintTaxYear,
+           app.fstrApplicationSource,
+           DATEDIFF(day, app.fdtmApplicationReceived, c.fdtmClosed) as ProcessingTime
+    from tblBC_CsePTDAgreement app
+    inner join tblACaseAll c
+    on app.flngDocKey = c.flngDocKey and c.fstrCaseType  IN ('PTDAPP','PTDRNW') 
+    LEFT OUTER JOIN tblAccountInfo ai 
+    ON	c.flngCustomerKey  = ai.flngCustomerKey 
+    AND	c.flngAccountKey   = ai.flngAccountKey 
+    where c.fdtmClosed not like '%999%' and app.fintTaxYear >= 2020
+    )
+    
+select 
+	protime.fintTaxYear,
+        avg(ProcessingTime) as AvergeProcessingTime      
+from protime
+where protime.fintTaxYear = 2020 
+and ProcessingTime < (Select Avg(ProcessingTime) + 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2020 )
+and ProcessingTime > (Select Avg(ProcessingTime) - 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2020 )
+group by protime.fintTaxYear 
+
+union
+
+select 
+	protime.fintTaxYear,
+        avg(ProcessingTime) as AvergeProcessingTime      
+from protime
+where protime.fintTaxYear = 2021 
+and ProcessingTime < (Select Avg(ProcessingTime) + 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2021 )
+and ProcessingTime > (Select Avg(ProcessingTime) - 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2021 )
+group by protime.fintTaxYear
+
+--2022 added KB
+
+union
+
+select 
+	protime.fintTaxYear,
+        avg(ProcessingTime) as AvergeProcessingTime      
+from protime
+where protime.fintTaxYear = 2022 
+and ProcessingTime < (Select Avg(ProcessingTime) + 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2022 )
+and ProcessingTime > (Select Avg(ProcessingTime) - 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2022 )
+group by protime.fintTaxYear
+
+-- copy 2021 and change to 2022 for next tax year
+;
+
+/*
+With protime as
+    (select 
+           --app.fdtmApplicationReceived
+           --,c.fdtmClosed
+           app.fintTaxYear,
+           app.fstrApplicationSource,
+           DATEDIFF(day, app.fdtmApplicationReceived, c.fdtmClosed) as ProcessingTime
+    from tblBC_CsePTDAgreement app
+    inner join tblACaseAll c
+    on app.flngDocKey = c.flngDocKey and c.fstrCaseType  IN ('PTDAPP','PTDRNW') 
+    LEFT OUTER JOIN tblAccountInfo ai 
+    ON	c.flngCustomerKey  = ai.flngCustomerKey 
+    AND	c.flngAccountKey   = ai.flngAccountKey 
+    where c.fdtmClosed not like '%999%' and app.fintTaxYear >= 2020
+    )
+    
+select 
+	protime.fintTaxYear,
+        protime.fstrApplicationSource as Source,
+        avg(ProcessingTime) as AvergeProcessingTime      
+from protime
+where protime.fintTaxYear = 2020 
+and protime.fstrApplicationSource = 'ETAX'
+and ProcessingTime < (Select Avg(ProcessingTime) + 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2020 and protime.fstrApplicationSource = 'ETAX')
+and ProcessingTime > (Select Avg(ProcessingTime) - 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2020 and protime.fstrApplicationSource = 'ETAX')
+group by protime.fintTaxYear, protime.fstrApplicationSource
+
+union 
+
+select 
+	protime.fintTaxYear,
+        protime.fstrApplicationSource as Source,
+        avg(ProcessingTime) as AvergeProcessingTime      
+from protime
+where protime.fintTaxYear = 2020 
+and protime.fstrApplicationSource = 'PAPER'
+and ProcessingTime < (Select Avg(ProcessingTime) + 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2020 and protime.fstrApplicationSource = 'PAPER')
+and ProcessingTime > (Select Avg(ProcessingTime) - 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2020 and protime.fstrApplicationSource = 'PAPER')
+group by protime.fintTaxYear, protime.fstrApplicationSource
+
+union 
+
+select 
+	protime.fintTaxYear,
+        protime.fstrApplicationSource as Source,
+        avg(ProcessingTime) as AvergeProcessingTime      
+from protime
+where protime.fintTaxYear = 2020 
+and protime.fstrApplicationSource = 'BATCH'
+and ProcessingTime < (Select Avg(ProcessingTime) + 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2020 and protime.fstrApplicationSource = 'BATCH')
+and ProcessingTime > (Select Avg(ProcessingTime) - 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2020 and protime.fstrApplicationSource = 'BATCH')
+group by protime.fintTaxYear, protime.fstrApplicationSource
+
+
+union
+
+select 
+	protime.fintTaxYear,
+        protime.fstrApplicationSource as Source,
+        avg(ProcessingTime) as AvergeProcessingTime      
+from protime
+where protime.fintTaxYear = 2021 
+and protime.fstrApplicationSource = 'ETAX'
+and ProcessingTime < (Select Avg(ProcessingTime) + 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2021 and protime.fstrApplicationSource = 'ETAX')
+and ProcessingTime > (Select Avg(ProcessingTime) - 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2021 and protime.fstrApplicationSource = 'ETAX')
+group by protime.fintTaxYear, protime.fstrApplicationSource
+
+union 
+
+select 
+	protime.fintTaxYear,
+        protime.fstrApplicationSource as Source,
+        avg(ProcessingTime) as AvergeProcessingTime      
+from protime
+where protime.fintTaxYear = 2021 
+and protime.fstrApplicationSource = 'PAPER'
+and ProcessingTime < (Select Avg(ProcessingTime) + 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2021 and protime.fstrApplicationSource = 'PAPER')
+and ProcessingTime > (Select Avg(ProcessingTime) - 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2021 and protime.fstrApplicationSource = 'PAPER')
+group by protime.fintTaxYear, protime.fstrApplicationSource
+
+union 
+
+select 
+	protime.fintTaxYear,
+        protime.fstrApplicationSource as Source,
+        avg(ProcessingTime) as AvergeProcessingTime      
+from protime
+where protime.fintTaxYear = 2021 
+and protime.fstrApplicationSource = 'BATCH'
+and ProcessingTime < (Select Avg(ProcessingTime) + 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2021 and protime.fstrApplicationSource = 'BATCH')
+and ProcessingTime > (Select Avg(ProcessingTime) - 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2021 and protime.fstrApplicationSource = 'BATCH')
+group by protime.fintTaxYear, protime.fstrApplicationSource
+
+
+-- 2022 added KB
+
+union
+
+select 
+	protime.fintTaxYear,
+        protime.fstrApplicationSource as Source,
+        avg(ProcessingTime) as AvergeProcessingTime      
+from protime
+where protime.fintTaxYear = 2022 
+and protime.fstrApplicationSource = 'ETAX'
+and ProcessingTime < (Select Avg(ProcessingTime) + 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2022 and protime.fstrApplicationSource = 'ETAX')
+and ProcessingTime > (Select Avg(ProcessingTime) - 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2022 and protime.fstrApplicationSource = 'ETAX')
+group by protime.fintTaxYear, protime.fstrApplicationSource
+
+union 
+
+select 
+	protime.fintTaxYear,
+        protime.fstrApplicationSource as Source,
+        avg(ProcessingTime) as AvergeProcessingTime      
+from protime
+where protime.fintTaxYear = 2022 
+and protime.fstrApplicationSource = 'PAPER'
+and ProcessingTime < (Select Avg(ProcessingTime) + 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2022 and protime.fstrApplicationSource = 'PAPER')
+and ProcessingTime > (Select Avg(ProcessingTime) - 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2022 and protime.fstrApplicationSource = 'PAPER')
+group by protime.fintTaxYear, protime.fstrApplicationSource
+
+union 
+
+select 
+	protime.fintTaxYear,
+        protime.fstrApplicationSource as Source,
+        avg(ProcessingTime) as AvergeProcessingTime      
+from protime
+where protime.fintTaxYear = 2022 
+and protime.fstrApplicationSource = 'BATCH'
+and ProcessingTime < (Select Avg(ProcessingTime) + 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2022 and protime.fstrApplicationSource = 'BATCH')
+and ProcessingTime > (Select Avg(ProcessingTime) - 3* STDEV(ProcessingTime) from protime where protime.fintTaxYear = 2022 and protime.fstrApplicationSource = 'BATCH')
+group by protime.fintTaxYear, protime.fstrApplicationSource
+;
+*/
+
+
+--Deferred Year with legacy accouts, have to use Account Info table only, Not inculde ceased one
+
+select 
+Year(ai.fdtmCommence) as LoanStartYear
+,count(ai.flngAccountKey) as LoanCount
+from tblAccountInfo ai where ai.fstrAccountType = 'PTD' and ai.fdtmCease like '%999%'
+group by Year(ai.fdtmCommence) 
+;
+
+
+        
+--select 
+--Year(ai.fdtmCommence) as LoanStartYear
+--,ai.flngAccountKey
+--from tblAccountInfo ai where ai.fstrAccountType = 'PTD' and ai.fdtmCease like '%999%'
+
+
+/*
+select 
+                        --Year(t.fdtmFilingPeriod) as TaxYear
+                        --,l.fstrJurisdiction as JUR
+                        Year(t.fdtmwhen) as EffectiveYear         
+                        ,Month(t.fdtmwhen) as EffectiveMonth   
+                        --,'Receivable Balance' as Category
+                        --,t.fcurAmount
+                        --,Row_Number() Over (Partition By Year(t.fdtmwhen), Month(t.fdtmwhen) Order By t.fcurAmount DESC) as RowNum
+                        --,Sum(t.fcurAmount) Over (Partition By Year(t.fdtmwhen), Month(t.fdtmwhen)) Value
+                        --,Sum(t.fcurAmount) Over (Order by Year(t.fdtmwhen), Month(t.fdtmwhen)) as Value
+                        --,Convert(Varchar(20), Sum(t.fcurAmount) Over (Partition By Year(t.fdtmwhen), Month(t.fdtmwhen) Order By t.fcurAmount DESC Rows Between Current Row And 1 Following), 1) As Cumsum
+                        ,Sum(t.fcurAmount) as Amount 
+                from tblTransaction t
+                inner join tblAccountInfo ai on t.flngAccountKey = ai.flngAccountKey 
+                where ai.fstrAccountType = 'PTD'
+                group by Year(t.fdtmwhen)         
+                        ,Month(t.fdtmwhen) 
+select top 100 ai.fstrID, t.*  from tblTransaction t
+                inner join tblAccountInfo ai on t.flngAccountKey = ai.flngAccountKey 
+                where ai.fstrAccountType = 'PTD' and ai.fstrID = 'PTD12233245'--and t.fstrTransType like 'ZMD%'  
+
+--select top 100* from tblDocPostTransaction where fstrId = 'PTD12233245'
+--select top 100* from tblTransOffsetDetail where flngAccountKey = 1379246592                 
+
+select *
+                        Year(t.fdtmFilingPeriod) as TaxYear
+                        --,l.fstrJurisdiction as JUR
+                        ,Year(t.fdtmwhen) as EffectiveYear         
+                        ,Month(t.fdtmwhen) as EffectiveMonth
+                        ,ai.fstrID
+                        --,'Receivable Balance' as Category
+                        --,t.fcurAmount
+                        --,Row_Number() Over (Partition By Year(t.fdtmwhen), Month(t.fdtmwhen) Order By t.fcurAmount DESC) as RowNum
+                        --,Sum(t.fcurAmount) Over (Partition By Year(t.fdtmwhen), Month(t.fdtmwhen)) Value
+                        --,Sum(t.fcurAmount) Over (Order by Year(t.fdtmwhen), Month(t.fdtmwhen)) as Value
+                        --,Convert(Varchar(20), Sum(t.fcurAmount) Over (Partition By Year(t.fdtmwhen), Month(t.fdtmwhen) Order By t.fcurAmount DESC Rows Between Current Row And 1 Following), 1) As Cumsum
+                        --,Sum(t.fcurAmount) as Amount 
+                        ,t.fcurAmount 
+                from tblTransaction t
+                inner join tblAccountInfo ai on t.flngAccountKey = ai.flngAccountKey 
+                where ai.fstrAccountType = 'PTD' and t.flngAccountKey = 2001558528--and Year(t.fdtmwhen) = 2019 and Month(t.fdtmwhen) = 4 and t.fcurAmount < 0 and ai.fstrID = 'PTD11824140'
+                --group by Year(t.fdtmwhen)         
+                        --,Month(t.fdtmwhen)
+
+select *
+                        --Year(t.fdtmFilingPeriod) as TaxYear
+                        --,l.fstrJurisdiction as JUR
+                        Year(t.fdtmcrediteffect) as EffectiveYear         
+                        ,Month(t.fdtmcrediteffect) as EffectiveMonth   
+                        ,ai.fstrID
+                        --,'Receivable Balance' as Category
+                        --,t.fcurAmount
+                        --,Row_Number() Over (Partition By Year(t.fdtmwhen), Month(t.fdtmwhen) Order By t.fcurAmount DESC) as RowNum
+                        --,Sum(t.fcurAmount) Over (Partition By Year(t.fdtmwhen), Month(t.fdtmwhen)) Value
+                        --,Sum(t.fcurAmount) Over (Order by Year(t.fdtmwhen), Month(t.fdtmwhen)) as Value
+                        --,Convert(Varchar(20), Sum(t.fcurAmount) Over (Partition By Year(t.fdtmwhen), Month(t.fdtmwhen) Order By t.fcurAmount DESC Rows Between Current Row And 1 Following), 1) As Cumsum
+                        --.,Sum(t.fcurAmount) as Amount
+                        ,t.fcurAmount
+                from tblTransOffsetDetail t
+                inner join tblAccountInfo ai on t.flngAccountKey = ai.flngAccountKey 
+                where ai.fstrAccountType = 'PTD' and t.flngAccountKey = 2001558528--and Year(t.fdtmcrediteffect) = 2019 and Month(t.fdtmcrediteffect) = 4 and t.fcurAmount < 0 and ai.fstrID = 'PTD11824140'
+                --group by Year(t.fdtmcrediteffect)         
+                        --,Month(t.fdtmcrediteffect) 
+*/
