@@ -1,4 +1,4 @@
--- create Temp table r for Disbursement and Repayment data by using CAS/Revenue Account Reconsilition report
+  -- create Temp table r for Disbursement and Repayment data by using CAS/Revenue Account Reconsilition report
 with r as
 	(SELECT	
 		CASE 
